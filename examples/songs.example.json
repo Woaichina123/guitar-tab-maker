@@ -1,0 +1,26 @@
+{
+  "songs": [
+    {
+      "slot": 1,
+      "title": "Example Song",
+      "artist": "Example Artist",
+      "originalKey": "♭B 小调",
+      "fingeringKey": "Am",
+      "capo": 1,
+      "shift": "原调 ♭B 小调 · Am 指法夹 1 品",
+      "bpm": 89,
+      "analysis": "analysis.json",
+      "lyrics": "lrc.json",
+      "sections": [
+        { "name": "前奏", "start": 0, "pattern": "verse" },
+        { "name": "主歌 1", "start": 31.6, "pattern": "verse" },
+        { "name": "副歌 1", "start": 74.0, "pattern": "chorus" }
+      ],
+      "patterns": {
+        "verse": { "name": "主歌型", "arrows": ["↓", "", "↓", "↑", "", "↑", "↓", "↑"], "tip": "轻扫，突出叙事感" },
+        "pre": { "name": "预副歌型", "arrows": ["↓", "", "↓", "", "↓", "", "↓", "↑"], "tip": "每拍一下轻扫，蓄力" },
+        "chorus": { "name": "副歌型", "arrows": ["↓", "", "↓", "↑", "↑", "↓", "↑", ""], "tip": "放开扫，重拍加重" }
+      }
+    }
+  ]
+}

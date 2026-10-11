@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>吉他谱同步播放器 · C调曲库</title>
+<style>
+:root {
+  --color-bg: #14100c;
+  --color-surface: #211a13;
+  --color-surface-2: #2c2319;
+  --color-line: #3d3223;
+  --color-text: #f5ede1;
+  --color-dim: #b3a48c;
+  --color-faint: #7d7160;
+  --color-accent: #e8a33d;
+  --color-accent-soft: #f5c877;
+  --color-accent-ink: #201404;
+  --color-section: #8a9a5b;
+  --focus-ring: #f5c877;
+  --font-main: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-s: 8px;
+  --radius-m: 14px;
+  --radius-l: 22px;
+  --pad-x: clamp(16px, 4vw, 48px);
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-main);
+  line-height: 1.6;
+}
+button { font-family: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+   SONGS：曲库数据。按下面的注释结构追加歌曲；完整字段说明见 SKILL.md。
+
+   var SONGS = [
+     {
+       title: "歌名", artist: "歌手",
+       originalKey: "C 大调",          // 展示用
+       fingeringKey: "C",              // 指法调（展示用）
+       capo: 0,                        // 变调夹品数；谱面和弦已按 (原调根音-capo)%12 换算
+       shift: "原调 C 大调 · 无需变调夹",
+       bpm: 90,
+       audio: "data:audio/mpeg;base64,__AUDIO_B64_1__",   // build_player.py 注入
+       progression: "C → Am → F → G",
+       patterns: {
+         verse:  { name: "主歌型", arrows: ["↓","","↓","↑","","↑","↓","↑"], tip: "轻扫叙事" },
+         pre:    { name: "预副歌型", arrows: ["↓","","↓","","↓","","↓","↑"], tip: "每拍蓄力" },
+         chorus: { name: "副歌型", arrows: ["↓","","↓","↑","↑","↓","↑",""], tip: "放开扫" }
+       },
+       sections: [ { name: "前奏", start: 0, pattern: "verse" } ],
+       chords:   [ { t: 0, c: "C", s: 0 } ],    // t=秒；s=所属 sections 索引
+       lyrics:   [ { t: 0, text: "示例歌词" } ]
+     }
+   ];
+   ============================================================ */
+    var SONGS = [];;
+
+    /* ===== 和弦指法图库：弦序 1-6 = E A D G B e ｜ 开放和弦 + 已会的大横按 ===== */
+    var CHORD_DIAGRAMS = {
+      "C":  { mute: [1], open: [4, 6], dots: [[2, 3], [3, 2], [5, 1]], barre: null },
+      "G":  { mute: [], open: [3, 4, 5], dots: [[1, 3], [2, 2], [6, 3]], barre: null },
+      "Am": { mute: [1], open: [2, 6], dots: [[3, 2], [4, 2], [5, 1]], barre: null },
+      "Dm": { mute: [1, 2], open: [3], dots: [[4, 2], [5, 3], [6, 1]], barre: null },
+      "Em": { mute: [], open: [1, 4, 5, 6], dots: [[2, 2], [3, 2]], barre: null },
+      "A":  { mute: [1], open: [2, 6], dots: [[3, 2], [5, 2], [4, 2]], barre: null },
+      "E":  { mute: [], open: [1, 5, 6], dots: [[2, 2], [3, 2], [4, 1]], barre: null },
+      "D":  { mute: [1, 2], open: [3], dots: [[4, 2], [5, 3], [6, 2]], barre: null },
+      "F":  { mute: [], open: [], dots: [[2, 3], [3, 3], [4, 2]], barre: { fret: 1, from: 1, to: 6 } },
+      "Bm": { mute: [1], open: [], dots: [[3, 4], [4, 4], [5, 3]], barre: { fret: 2, from: 2, to: 6 } },
+      "B":  { mute: [1], open: [], dots: [[3, 4], [4, 4], [5, 4]], barre: { fret: 2, from: 2, to: 6 } }
+    };
+
+    function sx(i) { return 18 + (i - 1) * 17; }
+    function fy(f) { return 34 + (f - 0.5) * 22; }
+
+    function renderDiagram(name) {
+      var d = CHORD_DIAGRAMS[name];
+      if (!d) return "";
+      var parts = [];
+      parts.push('<svg viewBox="0 0 116 130" width="104" height="117" aria-hidden="true">');
+      for (var i = 1; i <= 6; i++) {
+        parts.push('<line x1="' + sx(i) + '" y1="24" x2="' + sx(i) + '" y2="112" stroke="#5a4a36" stroke-width="' + (i === 1 ? 2.4 : 1.2) + '"/>');
+      }
+      for (var f = 0; f <= 4; f++) {
+        parts.push('<line x1="16" y1="' + (24 + f * 22) + '" x2="103" y2="' + (24 + f * 22) + '" stroke="#5a4a36" stroke-width="' + (f === 0 ? 3 : 1.2) + '"/>');
+      }
+      d.mute.forEach(function (s) {
+        parts.push('<text x="' + sx(s) + '" y="14" text-anchor="middle" font-size="11" fill="#7d7160">×</text>');
+      });
+      d.open.forEach(function (s) {
+        parts.push('<circle cx="' + sx(s) + '" cy="11" r="4" fill="none" stroke="#b3a48c" stroke-width="1.4"/>');
+      });
+      if (d.barre) {
+        var bx1 = sx(d.barre.from) - 7, bx2 = sx(d.barre.to) + 7;
+        parts.push('<rect x="' + bx1 + '" y="' + (fy(d.barre.fret) - 7) + '" width="' + (bx2 - bx1) + '" height="14" rx="7" fill="#e8a33d" opacity="0.9"/>');
+      }
+      d.dots.forEach(function (p) {
+        parts.push('<circle cx="' + sx(p[0]) + '" cy="' + fy(p[1]) + '" r="7" fill="#e8a33d"/>');
+      });
+      parts.push('</svg>');
+      return parts.join("");
+    }
+
+    /* ===== 元素引用 ===== */
+    var audio = document.getElementById("audio");
+    var playBtn = document.getElementById("playBtn");
+    var playIcon = document.getElementById("playIcon");
+    var seek = document.getElementById("seek");
+    var timeCur = document.getElementById("timeCur");
+    var timeTotal = document.getElementById("timeTotal");
+    var nowChordEl = document.getElementById("nowChord");
+    var nowSectionEl = document.getElementById("nowSection");
+    var nextChordEl = document.getElementById("nextChord");
+    var chordBar = document.getElementById("chordProgressBar");
+    var diagramEl = document.getElementById("chordDiagram");
+    var diagramName = document.getElementById("chordDiagramName");
+    var lyricPrev = document.getElementById("lyricPrev");
+    var lyricCur = document.getElementById("lyricCurrent");
+    var lyricNext = document.getElementById("lyricNext");
+    var chartRoot = document.getElementById("chartRoot");
+    var chipsRoot = document.getElementById("sectionChips");
+    var switcherRoot = document.getElementById("songSwitcher");
+    var songTitleEl = document.getElementById("songTitle");
+    var tuneMetaEl = document.getElementById("tuneMeta");
+    var progressionBox = document.getElementById("progressionBox");
+    var patternLegend = document.getElementById("patternLegend");
+    var nowStrumArrows = document.getElementById("nowStrumArrows");
+    var nowStrumTip = document.getElementById("nowStrumTip");
+
+    try { audio.preservesPitch = true; } catch (e) {}
+
+    function fmt(sec) {
+      if (!isFinite(sec) || sec < 0) sec = 0;
+      var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+      return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+    function dispName(c) { return c.replace("Bb", "♭B"); }
+
+    /* ===== 箭头渲染 ===== */
+    function arrowCellsHTML(arrows, cellCls) {
+      var html = "";
+      for (var i = 0; i < 8; i++) {
+        var v = arrows[i] || "";
+        if (v) {
+          html += '<i class="' + cellCls + '" data-pos="' + i + '">' + v + '</i>';
+        } else {
+          html += '<i class="' + cellCls + ' rest" data-pos="' + i + '">·</i>';
+        }
+      }
+      return html;
+    }
+
+    /* ===== 曲库状态 ===== */
+    var CUR = null;
+    var curSongIdx = -1;
+    var chordCells = [];
+    var chordSectionPattern = [];   // 每个和弦事件对应 pattern 的 key
+    var lastChordIdx = -2;
+    var lastLyricIdx = -2;
+    var lastBeatPos = -2;
+    var lastPatternKey = "";
+
+    function buildSwitcher() {
+      switcherRoot.innerHTML = "";
+      SONGS.forEach(function (song, idx) {
+        var b = document.createElement("button");
+        b.type = "button";
+        var t = document.createElement("span");
+        t.className = "s-title";
+        t.textContent = song.title;
+        var a = document.createElement("span");
+        a.className = "s-artist";
+        a.textContent = song.artist + " · 原调 " + song.originalKey;
+        b.appendChild(t);
+        b.appendChild(a);
+        b.addEventListener("click", function () { loadSong(idx); });
+        switcherRoot.appendChild(b);
+      });
+    }
+
+    function loadSong(idx) {
+      if (idx === curSongIdx) return;
+      curSongIdx = idx;
+      CUR = SONGS[idx];
+      audio.pause();
+      setIcon();
+      audio.src = CUR.audio;
+      seek.value = 0;
+
+      Array.prototype.forEach.call(switcherRoot.children, function (b, bi) {
+        b.classList.toggle("active", bi === idx);
+      });
+
+      songTitleEl.textContent = CUR.title + " · " + CUR.artist;
+      tuneMetaEl.innerHTML = "";
+      var capoText = CUR.capo > 0 ? "变调夹：夹第 " + CUR.capo + " 品" : "变调夹：不用夹";
+      [
+        [CUR.fingeringKey + "指法 · 标准调弦", true],
+        ["原调 " + CUR.originalKey + "（" + CUR.shift + "）", false],
+        ["4/4 拍 · 约 " + CUR.bpm + " BPM", false],
+        [capoText, CUR.capo > 0]
+      ].forEach(function (pair) {
+        var s = document.createElement("span");
+        s.textContent = pair[0];
+        if (pair[1]) s.className = "key-badge";
+        tuneMetaEl.appendChild(s);
+      });
+
+      progressionBox.textContent = CUR.progression;
+
+      // 节奏型图例
+      patternLegend.innerHTML = "";
+      Object.keys(CUR.patterns).forEach(function (key) {
+        var p = CUR.patterns[key];
+        var item = document.createElement("div");
+        item.className = "pattern-legend-item";
+        var head = document.createElement("div");
+        head.className = "pl-head";
+        var nm = document.createElement("span");
+        nm.className = "pl-name";
+        nm.textContent = p.name;
+        var beats = document.createElement("span");
+        beats.className = "pl-beats";
+        beats.textContent = "1 & 2 & 3 & 4 &";
+        head.appendChild(nm);
+        head.appendChild(beats);
+        var arr = document.createElement("div");
+        arr.className = "pl-arrows";
+        arr.innerHTML = arrowCellsHTML(p.arrows, "arrow-cell");
+        var tip = document.createElement("div");
+        tip.className = "pl-tip";
+        tip.textContent = p.tip;
+        item.appendChild(head);
+        item.appendChild(arr);
+        item.appendChild(tip);
+        patternLegend.appendChild(item);
+      });
+
+      // 段落 chips
+      chipsRoot.innerHTML = "";
+      CUR.sections.forEach(function (sec, si) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = sec.name;
+        b.addEventListener("click", function () { audio.currentTime = sec.start + 0.01; });
+        chipsRoot.appendChild(b);
+      });
+
+      // 全谱
+      chartRoot.innerHTML = "";
+      chordCells = [];
+      chordSectionPattern = [];
+      CUR.sections.forEach(function (sec, si) {
+        var box = document.createElement("section");
+        box.className = "chart-section";
+        var head = document.createElement("div");
+        head.className = "chart-section-head";
+        var nm = document.createElement("span");
+        nm.className = "chart-section-name";
+        nm.textContent = sec.name;
+        var tm = document.createElement("span");
+        tm.className = "chart-section-time";
+        tm.textContent = fmt(sec.start);
+        var pt = document.createElement("span");
+        pt.className = "chart-section-pattern";
+        pt.textContent = CUR.patterns[sec.pattern] ? CUR.patterns[sec.pattern].name : "";
+        head.appendChild(nm);
+        head.appendChild(tm);
+        head.appendChild(pt);
+        var row = document.createElement("div");
+        row.className = "chord-row";
+        var patArrows = CUR.patterns[sec.pattern] ? CUR.patterns[sec.pattern].arrows : null;
+        CUR.chords.forEach(function (ch, ci) {
+          if (ch.s !== si) return;
+          chordSectionPattern[ci] = sec.pattern;
+          var cell = document.createElement("button");
+          cell.type = "button";
+          cell.className = "chord-cell";
+          var cn = document.createElement("span");
+          cn.className = "cname";
+          cn.textContent = dispName(ch.c);
+          cell.appendChild(cn);
+          if (patArrows) {
+            var st = document.createElement("span");
+            st.className = "cstrum";
+            st.innerHTML = arrowCellsHTML(patArrows, "");
+            cell.appendChild(st);
+          }
+          var ct = document.createElement("span");
+          ct.className = "ctime";
+          ct.textContent = fmt(ch.t);
+          cell.appendChild(ct);
+          cell.addEventListener("click", function () { audio.currentTime = ch.t + 0.01; });
+          row.appendChild(cell);
+          chordCells[ci] = cell;
+        });
+        box.appendChild(head);
+        box.appendChild(row);
+        chartRoot.appendChild(box);
+      });
+
+      // 重置追踪状态
+      lastChordIdx = -2;
+      lastLyricIdx = -2;
+      lastBeatPos = -2;
+      lastPatternKey = "";
+      lyricPrev.textContent = " ";
+      lyricCur.textContent = "点击播放，和弦随音乐跳动";
+      lyricNext.textContent = " ";
+      updateAll(0);
+    }
+
+    /* ===== 追踪逻辑 ===== */
+    function findCurrent(arr, now) {
+      var lo = 0, hi = arr.length - 1, ans = -1;
+      while (lo <= hi) {
+        var mid = (lo + hi) >> 1;
+        if (arr[mid].t <= now) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      return ans;
+    }
+
+    function updateChord(now) {
+      var chords = CUR.chords;
+      var idx = findCurrent(chords, now);
+      if (idx === lastChordIdx) return;
+      lastChordIdx = idx;
+      var cur = chords[idx];
+      nowChordEl.textContent = cur ? dispName(cur.c) : "--";
+      nowChordEl.classList.remove("pulse");
+      void nowChordEl.offsetWidth;
+      nowChordEl.classList.add("pulse");
+      var secName = cur ? CUR.sections[cur.s].name : "准备";
+      var next = chords[idx + 1];
+      nowSectionEl.textContent = secName;
+      nextChordEl.textContent = next ? dispName(next.c) : "结束";
+      diagramEl.innerHTML = cur ? renderDiagram(cur.c) : "";
+      diagramName.textContent = cur ? (dispName(cur.c) + " 指法") : "指法图";
+      chordCells.forEach(function (cell, ci) {
+        if (!cell) return;
+        cell.classList.toggle("playing", ci === idx);
+        cell.classList.toggle("passed", ci < idx);
+      });
+      Array.prototype.forEach.call(chipsRoot.children, function (b, bi) {
+        b.classList.toggle("active", cur && bi === cur.s);
+      });
+      if (!audio.paused && cur && chordCells[idx] && chordCells[idx].scrollIntoView) {
+        chordCells[idx].scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }
+
+    function updateChordProgress(now) {
+      var idx = lastChordIdx;
+      if (idx < 0 || !CUR.chords[idx]) { chordBar.style.width = "0"; return; }
+      var start = CUR.chords[idx].t;
+      var end = CUR.chords[idx + 1] ? CUR.chords[idx + 1].t : (audio.duration || now);
+      var ratio = (now - start) / Math.max(0.01, end - start);
+      chordBar.style.width = Math.min(100, Math.max(0, ratio * 100)) + "%";
+    }
+
+    function updateLyrics(now) {
+      var lyrics = CUR.lyrics;
+      var idx = findCurrent(lyrics, now);
+      if (idx === lastLyricIdx) return;
+      lastLyricIdx = idx;
+      lyricPrev.textContent = idx > 0 ? lyrics[idx - 1].text : " ";
+      lyricCur.textContent = idx >= 0 ? lyrics[idx].text : "（间奏 / 纯音乐）";
+      lyricNext.textContent = idx >= 0 && idx + 1 < lyrics.length ? lyrics[idx + 1].text : " ";
+    }
+
+    /* 舞台区扫弦箭头：跟随小节位置点亮 */
+    function updateStrum(now) {
+      var idx = lastChordIdx;
+      var pKey = (idx >= 0 && CUR.chords[idx]) ? chordSectionPattern[idx] : null;
+      var pat = pKey ? CUR.patterns[pKey] : null;
+      if (!pat) {
+        if (lastPatternKey !== "") {
+          nowStrumArrows.innerHTML = "";
+          nowStrumTip.textContent = "等待进入和弦段落";
+          lastPatternKey = "";
+        }
+        return;
+      }
+      if (pKey !== lastPatternKey) {
+        lastPatternKey = pKey;
+        nowStrumArrows.innerHTML = arrowCellsHTML(pat.arrows, "arrow-cell");
+        nowStrumTip.textContent = pat.name + "：" + pat.tip;
+        lastBeatPos = -2;
+      }
+      // 小节位置：60/BPM 秒/拍，8 个八分位 = 4 拍
+      var beatLen = 60 / CUR.bpm / 2;
+      var chordStart = CUR.chords[idx].t;
+      var pos = Math.floor(((now - chordStart) / beatLen)) % 8;
+      if (pos !== lastBeatPos) {
+        lastBeatPos = pos;
+        var cells = nowStrumArrows.children;
+        for (var i = 0; i < cells.length; i++) {
+          cells[i].classList.toggle("beat-on", i === pos);
+        }
+      }
+    }
+
+    function updateAll(now) {
+      updateChord(now);
+      updateChordProgress(now);
+      updateLyrics(now);
+      updateStrum(now);
+    }
+
+    function tick() {
+      if (CUR) {
+        var now = audio.currentTime;
+        timeCur.textContent = fmt(now);
+        if (isFinite(audio.duration)) {
+          timeTotal.textContent = fmt(audio.duration);
+          if (!seekDragging) seek.value = Math.round(now / audio.duration * 1000);
+        }
+        updateAll(now);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    /* ===== 播放控制 ===== */
+    function setIcon() {
+      playIcon.innerHTML = audio.paused
+        ? '<path d="M8 5v14l11-7z"/>'
+        : '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+      playBtn.setAttribute("aria-label", audio.paused ? "播放" : "暂停");
+    }
+    playBtn.addEventListener("click", function () {
+      if (!CUR) return;
+      if (audio.paused) { audio.play().catch(function () {}); } else { audio.pause(); }
+    });
+    audio.addEventListener("play", setIcon);
+    audio.addEventListener("pause", setIcon);
+
+    var seekDragging = false;
+    seek.addEventListener("input", function () {
+      seekDragging = true;
+      if (isFinite(audio.duration)) audio.currentTime = seek.value / 1000 * audio.duration;
+    });
+    seek.addEventListener("change", function () { seekDragging = false; });
+
+    document.getElementById("back5").addEventListener("click", function () {
+      audio.currentTime = Math.max(0, audio.currentTime - 5);
+    });
+    document.getElementById("fwd5").addEventListener("click", function () {
+      audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 5);
+    });
+
+    document.querySelectorAll(".rate-group button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        audio.playbackRate = parseFloat(b.getAttribute("data-rate"));
+        document.querySelectorAll(".rate-group button").forEach(function (x) { x.classList.remove("active"); });
+        b.classList.add("active");
+        try { localStorage.setItem("guitar_rate", b.getAttribute("data-rate")); } catch (e) {}
+      });
+    });
+    try {
+      var savedRate = localStorage.getItem("guitar_rate");
+      if (savedRate) {
+        var btn = document.querySelector('.rate-group button[data-rate="' + savedRate + '"]');
+        if (btn) btn.click();
+      }
+    } catch (e) {}
+
+    document.addEventListener("keydown", function (e) {
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        playBtn.click();
+      } else if (e.code === "ArrowLeft") {
+        audio.currentTime = Math.max(0, audio.currentTime - 5);
+      } else if (e.code === "ArrowRight") {
+        audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 5);
+      }
+    });
+
+    buildSwitcher();
+    loadSong(0);
+    requestAnimationFrame(tick);
+  } catch (err) {
+    var tip = document.createElement("p");
+    tip.textContent = "播放器脚本加载失败，请刷新重试。";
+    tip.style.color = "#e8a33d";
+    tip.style.padding = "12px 24px";
+    document.body.insertBefore(tip, document.body.firstChild);
+  }
+})();
+</script>
+</body>
+</html>
